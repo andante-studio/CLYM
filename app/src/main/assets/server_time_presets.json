@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "presets": [
+    {
+      "id": "google_forms",
+      "name": "구글 폼",
+      "syncUrl": "https://docs.google.com/",
+      "enabled": true,
+      "sortOrder": 1
+    },
+    {
+      "id": "naver_form",
+      "name": "네이버 폼",
+      "syncUrl": "https://form.naver.com/",
+      "enabled": true,
+      "sortOrder": 2
+    },
+    {
+      "id": "weverse",
+      "name": "위버스",
+      "syncUrl": "https://weverse.io/",
+      "enabled": true,
+      "sortOrder": 3
+    },
+    {
+      "id": "jyp_fans",
+      "name": "FANS",
+      "syncUrl": "https://www.jypfans.com/",
+      "enabled": true,
+      "sortOrder": 4
+    }
+  ]
+}

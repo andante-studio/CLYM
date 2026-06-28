@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">CLYM</string>
+    <string name="main_title">CLYM</string>
+    <string name="accessibility_service_label">CLYM 예약 1회 터치</string>
+    <string name="accessibility_service_description">예약된 시각에 사용자가 지정한 화면 좌표를 한 번 터치합니다.</string>
+</resources>
