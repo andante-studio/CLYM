@@ -4,6 +4,7 @@ import android.content.Intent
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -24,7 +25,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,7 +32,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -45,8 +44,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -97,8 +96,9 @@ private val ClymNavy = Color(0xFF24445F)
 private val ClymBlue = Color(0xFF8FC7F7)
 private val ClymAccentBlue = Color(0xFF5EA9E6)
 private const val SERVER_PRESET_TAG = "ServerPreset"
-private const val PERMISSION_PREFS_NAME = "permission_onboarding"
-private const val HAS_SHOWN_PERMISSION_ONBOARDING = "has_shown_permission_onboarding"
+private const val PUBLIC_PREFS_NAME = "public_preferences"
+private const val COUNTDOWN_SOUND_ENABLED = "countdown_sound_enabled"
+private const val COUNTDOWN_SOUND_LEAD_TIME_MS = 11_000L
 
 private enum class TimeMode {
     Device,
@@ -121,8 +121,8 @@ class MainActivity : ComponentActivity() {
 fun NanoClickScreen() {
     val context = LocalContext.current
     val presetRepository = remember { ServerTimePresetRepository(context.applicationContext) }
-    val permissionPrefs = remember {
-        context.getSharedPreferences(PERMISSION_PREFS_NAME, Context.MODE_PRIVATE)
+    val publicPrefs = remember {
+        context.getSharedPreferences(PUBLIC_PREFS_NAME, Context.MODE_PRIVATE)
     }
     var timeMode by remember { mutableStateOf(TimeMode.Device) }
     var selectedPresetId by remember { mutableStateOf<String?>(null) }
@@ -134,7 +134,6 @@ fun NanoClickScreen() {
     var isLoadingPresets by remember { mutableStateOf(false) }
     var showPresetDialog by remember { mutableStateOf(false) }
     var showDirectSyncDialog by remember { mutableStateOf(false) }
-    var showPermissionDialog by remember { mutableStateOf(false) }
     var hasOverlayPermission by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     val defaultExecutionTime = remember { calculateDefaultExecutionTime() }
 
@@ -148,44 +147,18 @@ fun NanoClickScreen() {
     var serverTimeOffsetMs by remember { mutableStateOf<Long?>(null) }
     var roundTripTimeMs by remember { mutableLongStateOf(0L) }
     var currentDeviceTimeMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    var clickPosition by remember { mutableStateOf<ClickPosition?>(null) }
-    var clickPositionMessage by remember { mutableStateOf<String?>(null) }
-    var reservationMessage by remember { mutableStateOf<String?>(null) }
-    var showAccessibilityDialog by remember { mutableStateOf(false) }
-    var handledCompletionId by remember { mutableLongStateOf(0L) }
+    var countdownTargetElapsedMs by remember { mutableStateOf<Long?>(null) }
+    var countdownMessage by remember { mutableStateOf<String?>(null) }
+    var isCountdownSoundEnabled by remember {
+        mutableStateOf(publicPrefs.getBoolean(COUNTDOWN_SOUND_ENABLED, false))
+    }
+    var countdownMediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var isCountdownSoundScheduled by remember { mutableStateOf(false) }
+    var hasPlayedCountdownSound by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
-    val reservationState by NanoClickRuntimeState.reservationState.collectAsState()
-    val isAccessibilityConnected by NanoClickRuntimeState.accessibilityConnected.collectAsState()
     val floatingClockState by FloatingClockRuntimeState.state.collectAsState()
     var currentElapsedMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
-    val isReservationScheduled = reservationState.phase == ReservationPhase.Scheduled
-
-    val accessibilitySettingsLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        reservationMessage = if (NanoClickAccessibilityService.isConnected()) {
-            null
-        } else {
-            "CLYM 접근성 서비스를 켜주세요."
-        }
-    }
-
-    fun startClickPositionOverlay() {
-        context.startService(ClickPositionOverlayService.startEditingIntent(context))
-        clickPositionMessage = "원형 포인터를 드래그해 누를 위치를 맞춘 뒤 적용을 눌러주세요."
-        reservationMessage = null
-    }
-
-    val overlayPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        hasOverlayPermission = Settings.canDrawOverlays(context)
-        if (hasOverlayPermission) {
-            startClickPositionOverlay()
-        } else {
-            clickPositionMessage = "다른 앱 위에 표시 권한이 필요합니다. 권한을 허용한 뒤 다시 시도해주세요."
-        }
-    }
+    val isCountdownRunning = countdownTargetElapsedMs != null
 
     var pendingFloatingClockMode by remember { mutableStateOf<FloatingClockMode?>(null) }
 
@@ -252,11 +225,6 @@ fun NanoClickScreen() {
     }
 
     fun switchToDeviceTimeMode() {
-        if (isReservationScheduled || ScheduledClickService.isRunning()) {
-            reservationMessage = "진행 중인 예약을 먼저 취소해주세요."
-            return
-        }
-
         timeMode = TimeMode.Device
         serverTimeOffsetMs = null
         selectedPresetId = null
@@ -282,7 +250,6 @@ fun NanoClickScreen() {
         coroutineScope.launch {
             isLoadingServerTime = true
             errorMessage = null
-            reservationMessage = null
 
             fetchServerTime(normalizedUrl)
                 .onSuccess { serverTime ->
@@ -343,41 +310,6 @@ fun NanoClickScreen() {
         }
     }
 
-    fun requestClickPosition() {
-        if (isReservationScheduled) {
-            clickPositionMessage = "예약 중에는 클릭 위치를 변경할 수 없습니다."
-            return
-        }
-        clickPosition = null
-        reservationMessage = null
-        hasOverlayPermission = Settings.canDrawOverlays(context)
-        if (hasOverlayPermission) {
-            startClickPositionOverlay()
-        } else {
-            clickPositionMessage = "다른 앱 위에 표시 권한을 허용해야 위치를 지정할 수 있습니다."
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:${context.packageName}")
-            )
-            overlayPermissionLauncher.launch(intent)
-        }
-    }
-
-    fun clearClickPosition() {
-        if (isReservationScheduled) {
-            clickPositionMessage = "예약 중에는 클릭 위치를 초기화할 수 없습니다."
-            return
-        }
-        clickPosition = null
-        reservationMessage = null
-        context.startService(ClickPositionOverlayService.clearIntent(context))
-        clickPositionMessage = "클릭 위치가 초기화되었습니다."
-    }
-
-    fun openAccessibilitySettings() {
-        accessibilitySettingsLauncher.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-    }
-
     fun openOverlaySettings() {
         val intent = Intent(
             Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -386,34 +318,62 @@ fun NanoClickScreen() {
         context.startActivity(intent)
     }
 
-    fun cancelReservation() {
-        context.startService(ScheduledClickService.cancelIntent(context))
+    fun releaseCountdownMediaPlayer() {
+        countdownMediaPlayer?.runCatching {
+            if (isPlaying) {
+                stop()
+            }
+            release()
+        }
+        countdownMediaPlayer = null
     }
 
-    fun startReservation() {
+    fun clearCountdownSound() {
+        isCountdownSoundScheduled = false
+        hasPlayedCountdownSound = false
+        releaseCountdownMediaPlayer()
+    }
+
+    fun playCountdownSound() {
+        if (!isCountdownSoundScheduled || hasPlayedCountdownSound) {
+            return
+        }
+
+        hasPlayedCountdownSound = true
+        isCountdownSoundScheduled = false
+        releaseCountdownMediaPlayer()
+        countdownMediaPlayer = MediaPlayer.create(context, R.raw.clym_countdown_10s)?.apply {
+            setOnCompletionListener { player ->
+                player.release()
+                if (countdownMediaPlayer === player) {
+                    countdownMediaPlayer = null
+                }
+            }
+            setOnErrorListener { player, _, _ ->
+                player.release()
+                if (countdownMediaPlayer === player) {
+                    countdownMediaPlayer = null
+                }
+                true
+            }
+            start()
+        }
+    }
+
+    fun toggleCountdown() {
+        if (isCountdownRunning) {
+            countdownTargetElapsedMs = null
+            countdownMessage = null
+            clearCountdownSound()
+            return
+        }
+
         val scheduleOffset = if (timeMode == TimeMode.Server && serverTimeOffsetMs != null) {
             serverTimeOffsetMs ?: 0L
         } else {
             0L
         }
-        val position = clickPosition
-        reservationMessage = null
-
-        when {
-            position == null -> {
-                reservationMessage = "클릭 위치를 먼저 지정해주세요."
-                return
-            }
-            !isAccessibilityConnected || !NanoClickAccessibilityService.isConnected() -> {
-                reservationMessage = "CLYM 접근성 서비스를 켜주세요."
-                showAccessibilityDialog = true
-                return
-            }
-            isReservationScheduled || ScheduledClickService.isRunning() -> {
-                reservationMessage = "이미 예약 대기 중입니다."
-                return
-            }
-        }
+        countdownMessage = null
 
         val target = calculateScheduleTarget(
             hour = hour,
@@ -424,61 +384,35 @@ fun NanoClickScreen() {
             serverOffsetMs = scheduleOffset,
             elapsedNowMs = SystemClock.elapsedRealtime()
         ).getOrElse { throwable ->
-            reservationMessage = throwable.message ?: "실행 시각을 확인해주세요."
+            countdownMessage = throwable.message ?: "목표 시각을 확인해주세요."
             return
         }
 
-        val intent = ScheduledClickService.startIntent(
-            context = context,
-            x = position.x,
-            y = position.y,
-            targetElapsedMs = target.targetElapsedMs,
-            scheduledLabel = target.label
-        )
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent)
-        } else {
-            context.startService(intent)
-        }
-        reservationMessage = "${
-            if (scheduleOffset == 0L) "기기 시간" else "서버 시간"
-        } 기준으로 예약합니다. 실행 시각까지 화면을 켜두고 잠금을 해제한 상태로 유지해주세요."
-    }
-
-    DisposableEffect(Unit) {
-        ClickPositionOverlayResult.onApplied = { position ->
-            clickPosition = position
-            clickPositionMessage = null
-            reservationMessage = null
-        }
-        ClickPositionOverlayResult.onCancelled = {
-            clickPositionMessage = if (clickPosition == null) {
-                "위치 지정이 취소되었습니다. 좌표가 저장되지 않았습니다."
-            } else {
-                "위치 지정이 취소되었습니다."
-            }
-        }
-
-        onDispose {
-            ClickPositionOverlayResult.onApplied = null
-            ClickPositionOverlayResult.onCancelled = null
-        }
+        val remainingMs = target.targetElapsedMs - SystemClock.elapsedRealtime()
+        clearCountdownSound()
+        isCountdownSoundScheduled =
+            isCountdownSoundEnabled && remainingMs >= COUNTDOWN_SOUND_LEAD_TIME_MS
+        countdownTargetElapsedMs = target.targetElapsedMs
     }
 
     DisposableEffect(context) {
         val activity = context as? ComponentActivity
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                hasOverlayPermission = Settings.canDrawOverlays(context)
-                NanoClickRuntimeState.setAccessibilityConnected(
-                    NanoClickAccessibilityService.isConnected()
-                )
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    hasOverlayPermission = Settings.canDrawOverlays(context)
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    isCountdownSoundScheduled = false
+                    releaseCountdownMediaPlayer()
+                }
+                else -> Unit
             }
         }
         activity?.lifecycle?.addObserver(observer)
         onDispose {
             activity?.lifecycle?.removeObserver(observer)
+            clearCountdownSound()
         }
     }
 
@@ -493,35 +427,28 @@ fun NanoClickScreen() {
     }
 
     LaunchedEffect(Unit) {
-        val hasShownPermissionOnboarding = permissionPrefs.getBoolean(
-            HAS_SHOWN_PERMISSION_ONBOARDING,
-            false
-        )
-        val isOverlayReady = Settings.canDrawOverlays(context)
-        val isAccessibilityReady = NanoClickAccessibilityService.isConnected()
-        if (!hasShownPermissionOnboarding && (!isOverlayReady || !isAccessibilityReady)) {
-            permissionPrefs.edit()
-                .putBoolean(HAS_SHOWN_PERMISSION_ONBOARDING, true)
-                .apply()
-            hasOverlayPermission = isOverlayReady
-            NanoClickRuntimeState.setAccessibilityConnected(isAccessibilityReady)
-            showPermissionDialog = true
-        }
-    }
-
-    LaunchedEffect(Unit) {
         while (true) {
             currentDeviceTimeMs = System.currentTimeMillis()
             currentElapsedMs = SystemClock.elapsedRealtime()
+            val remainingMs = countdownTargetElapsedMs
+                ?.minus(currentElapsedMs)
+                ?.coerceAtLeast(0L)
+            if (
+                remainingMs != null &&
+                remainingMs in 1L..COUNTDOWN_SOUND_LEAD_TIME_MS &&
+                isCountdownSoundScheduled &&
+                !hasPlayedCountdownSound
+            ) {
+                playCountdownSound()
+            }
+            if (
+                countdownTargetElapsedMs != null &&
+                currentElapsedMs >= (countdownTargetElapsedMs ?: Long.MAX_VALUE)
+            ) {
+                countdownTargetElapsedMs = null
+                isCountdownSoundScheduled = false
+            }
             delay(30L)
-        }
-    }
-
-    LaunchedEffect(reservationState.completionId) {
-        if (reservationState.completionId > 0L && reservationState.completionId != handledCompletionId) {
-            handledCompletionId = reservationState.completionId
-            clickPosition = null
-            reservationMessage = reservationState.message
         }
     }
 
@@ -530,72 +457,12 @@ fun NanoClickScreen() {
     val deviceTimeText = formatTime(currentDeviceTimeMs)
     val timeDiffText = serverTimeOffsetMs?.let { formatTimeDifference(it) } ?: "-"
     val communicationTimeText = if (roundTripTimeMs > 0L) "$roundTripTimeMs ms" else "-"
-    val remainingTimeText = reservationState.targetElapsedMs
-        ?.let { formatReadableDuration((it - currentElapsedMs).coerceAtLeast(0L)) }
-        ?: "-"
-
-    if (showAccessibilityDialog) {
-        AlertDialog(
-            onDismissRequest = { showAccessibilityDialog = false },
-            title = { Text("접근성 권한이 필요합니다") },
-            text = {
-                Text("예약된 시각에 지정 위치를 한 번 터치하기 위해 CLYM 접근성 서비스를 켜주세요.")
-            },
-            confirmButton = {
-                DialogPrimaryButton(
-                    text = "설정 열기",
-                    onClick = {
-                        showAccessibilityDialog = false
-                        openAccessibilitySettings()
-                    }
-                )
-            },
-            dismissButton = {
-                DialogMenuButton(
-                    text = "취소",
-                    onClick = { showAccessibilityDialog = false }
-                )
-            },
-            containerColor = DialogBackgroundColor
-        )
-    }
-
-    if (showPermissionDialog) {
-        AlertDialog(
-            onDismissRequest = { showPermissionDialog = false },
-            title = { Text("권한 설정") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        text = if (hasOverlayPermission && isAccessibilityConnected) {
-                            "사용 준비 완료"
-                        } else {
-                            "필요한 권한을 확인해주세요."
-                        },
-                        fontWeight = FontWeight.Bold
-                    )
-                    PermissionItem(
-                        title = "다른 앱 위에 표시",
-                        status = if (hasOverlayPermission) "허용됨" else "설정 필요",
-                        description = "플로팅 시계와 클릭 위치 표시를 위해 필요합니다.",
-                        needsAttention = !hasOverlayPermission,
-                        onClick = { openOverlaySettings() }
-                    )
-                    PermissionItem(
-                        title = "접근성 서비스",
-                        status = if (isAccessibilityConnected) "켜짐" else "설정 필요",
-                        description = "예약된 시각에 지정 위치를 한 번 터치하기 위해 필요합니다.",
-                        needsAttention = !isAccessibilityConnected,
-                        onClick = { openAccessibilitySettings() }
-                    )
-                }
-            },
-            confirmButton = {
-                DialogCloseButton(onClick = { showPermissionDialog = false })
-            },
-            containerColor = DialogBackgroundColor
-        )
-    }
+    val remainingTimeText = formatCountdown(
+        countdownTargetElapsedMs
+            ?.minus(currentElapsedMs)
+            ?.coerceAtLeast(0L)
+            ?: 0L
+    )
 
     if (showPresetDialog) {
         AlertDialog(
@@ -717,38 +584,10 @@ fun NanoClickScreen() {
                 )
 
                 Text(
-                    text = "서버 시간 기준 예약 클릭",
+                    text = "Mobile Millisecond Clock",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall
                 )
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                TextButton(
-                    onClick = { showPermissionDialog = true },
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Box(
-                        modifier = Modifier.size(32.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "⚙",
-                            color = Color(0xFF24445F),
-                            fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (!hasOverlayPermission || !isAccessibilityConnected) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .offset(x = 3.dp)
-                                    .size(8.dp)
-                                    .background(Color(0xFFE53935), CircleShape)
-                            )
-                        }
-                    }
-                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -771,7 +610,7 @@ fun NanoClickScreen() {
                                         val name = selectedPresetName ?: "직접 설정"
                                         syncServerTime(name, selectedPresetId, syncSourceUrl)
                                     },
-                                    enabled = !isLoadingServerTime && !isReservationScheduled && syncSourceUrl.isNotBlank(),
+                                    enabled = !isLoadingServerTime && syncSourceUrl.isNotBlank(),
                                     modifier = Modifier.size(44.dp)
                                 ) {
                                     Icon(
@@ -856,7 +695,7 @@ fun NanoClickScreen() {
                     modifier = Modifier.padding(14.dp)
                 ) {
                     Text(
-                        text = "실행 시각",
+                        text = "목표 시각",
                         fontWeight = FontWeight.Bold
                     )
 
@@ -871,11 +710,11 @@ fun NanoClickScreen() {
                             value = hour,
                             onValueChange = {
                                 hour = it
-                                reservationMessage = null
+                                countdownMessage = null
                             },
                             label = "",
                             maxLength = 2,
-                            enabled = !isReservationScheduled,
+                            enabled = !isCountdownRunning,
                             modifier = Modifier.width(58.dp)
                                                .height(48.dp)
                         )
@@ -884,11 +723,11 @@ fun NanoClickScreen() {
                             value = minute,
                             onValueChange = {
                                 minute = it
-                                reservationMessage = null
+                                countdownMessage = null
                             },
                             label = "",
                             maxLength = 2,
-                            enabled = !isReservationScheduled,
+                            enabled = !isCountdownRunning,
                             modifier = Modifier.width(58.dp)
                                                .height(48.dp)
                         )
@@ -897,11 +736,11 @@ fun NanoClickScreen() {
                             value = second,
                             onValueChange = {
                                 second = it
-                                reservationMessage = null
+                                countdownMessage = null
                             },
                             label = "",
                             maxLength = 2,
-                            enabled = !isReservationScheduled,
+                            enabled = !isCountdownRunning,
                             modifier = Modifier.width(58.dp)
                                                .height(48.dp)
                         )
@@ -910,11 +749,11 @@ fun NanoClickScreen() {
                             value = millisecond,
                             onValueChange = {
                                 millisecond = it
-                                reservationMessage = null
+                                countdownMessage = null
                             },
                             label = "",
                             maxLength = 3,
-                            enabled = !isReservationScheduled,
+                            enabled = !isCountdownRunning,
                             modifier = Modifier.width(78.dp)
                                                .height(48.dp)
                         )
@@ -923,7 +762,7 @@ fun NanoClickScreen() {
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
-                        text = "실행 예정: $hour:$minute:$second.$millisecond",
+                        text = "목표 시각: $hour:$minute:$second.$millisecond",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -939,123 +778,115 @@ fun NanoClickScreen() {
                     modifier = Modifier.padding(14.dp)
                 ) {
                     Text(
-                        text = if (clickPosition == null) "클릭 위치 (미지정)" else "클릭 위치 (지정 완료)",
+                        text = "카운트다운",
                         fontWeight = FontWeight.Bold
                     )
 
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    val savedClickPosition = clickPosition
-                    if (savedClickPosition != null) {
-                        Text(
-                            text = "X: ${savedClickPosition.x}, Y: ${savedClickPosition.y}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                    }
-
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "예약된 위치를 한 번 터치합니다.",
-                        style = MaterialTheme.typography.bodySmall
+                        text = remainingTimeText,
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold
                     )
 
-                    clickPositionMessage?.let { message ->
+                    countdownMessage?.let { message ->
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = message,
+                            color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    if (clickPosition == null) {
-                        Button(
-                            onClick = { requestClickPosition() },
-                            enabled = !isReservationScheduled,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("클릭 위치 지정")
-                        }
-                    } else {
-                        Button(
-                            onClick = { clearClickPosition() },
-                            enabled = !isReservationScheduled,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("초기화")
-                        }
-                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
-
-            if (isReservationScheduled || reservationMessage != null) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp)
-                    ) {
-                        if (isReservationScheduled) {
-                            Text(
-                                text = "예약 대기 중",
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "실행 예정: ${reservationState.scheduledTimeLabel ?: "-"}",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Text(
-                                text = "남은 시간: $remainingTimeText",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Text(
-                                text = "지정 좌표: X ${reservationState.x ?: "-"}, Y ${reservationState.y ?: "-"}",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Text(
-                                text = "접근성 서비스: ${if (isAccessibilityConnected) "연결됨" else "꺼짐"}",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-
-                        reservationMessage?.let { message ->
-                            if (isReservationScheduled) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                            }
-                            Text(
-                                text = message,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-            }
+            Spacer(modifier = Modifier.height(14.dp))
 
             Button(
-                onClick = {
-                    if (isReservationScheduled) {
-                        cancelReservation()
-                    } else {
-                        startReservation()
-                    }
-                },
+                onClick = { toggleCountdown() },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(54.dp)
             ) {
-                Text(
-                    when {
-                        isReservationScheduled -> "예약 취소"
-                        else -> "예약 시작"
+                Text(if (isCountdownRunning) "카운트다운 취소" else "카운트다운 시작")
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "카운트다운 사운드",
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "목표 시각 전에 카운트다운 사운드를 재생합니다.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
-                )
+                    Switch(
+                        checked = isCountdownSoundEnabled,
+                        onCheckedChange = { enabled ->
+                            isCountdownSoundEnabled = enabled
+                            if (!enabled) {
+                                clearCountdownSound()
+                            } else {
+                                val remainingMs = countdownTargetElapsedMs
+                                    ?.minus(SystemClock.elapsedRealtime())
+                                if (
+                                    remainingMs != null &&
+                                    remainingMs >= COUNTDOWN_SOUND_LEAD_TIME_MS &&
+                                    !hasPlayedCountdownSound
+                                ) {
+                                    isCountdownSoundScheduled = true
+                                }
+                            }
+                            publicPrefs.edit()
+                                .putBoolean(COUNTDOWN_SOUND_ENABLED, enabled)
+                                .apply()
+                        }
+                    )
+                }
+            }
+
+            if (!hasOverlayPermission) {
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "플로팅 권한이 필요합니다",
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "플로팅 시계를 화면 위에 표시하려면 권한을 허용해주세요.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = { openOverlaySettings() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("플로팅 권한 열기")
+                        }
+                    }
+                }
             }
         }
     }
@@ -1115,54 +946,6 @@ private fun DialogCloseButton(
             onClick = onClick,
             modifier = Modifier.width(132.dp)
         )
-    }
-}
-
-@Composable
-private fun PermissionItem(
-    title: String,
-    status: String,
-    description: String,
-    needsAttention: Boolean,
-    onClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = title,
-                    color = ClymNavy,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = status,
-                    color = if (needsAttention) MaterialTheme.colorScheme.error else ClymAccentBlue,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Text(
-                text = description,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall
-            )
-            if (needsAttention) {
-                DialogMenuButton(
-                    text = "설정 열기",
-                    onClick = onClick
-                )
-            }
-        }
     }
 }
 
@@ -1365,6 +1148,20 @@ private fun formatReadableDuration(durationMs: Long): String =
         else -> "$durationMs ms"
     }
 
+private fun formatCountdown(durationMs: Long): String {
+    val hours = durationMs / 3_600_000L
+    val minutes = (durationMs % 3_600_000L) / 60_000L
+    val seconds = (durationMs % 60_000L) / 1_000L
+    val milliseconds = durationMs % 1_000L
+    return "%02d:%02d:%02d.%03d".format(
+        Locale.US,
+        hours,
+        minutes,
+        seconds,
+        milliseconds
+    )
+}
+
 internal data class ExecutionTimeParts(
     val hour: String,
     val minute: String,
@@ -1425,7 +1222,7 @@ internal fun calculateScheduleTarget(
     val delayMs = targetServerTimeMs - serverNowMs
 
     if (delayMs <= 0L) {
-        throw IllegalArgumentException("이미 지난 시각입니다. 실행 시각을 다시 설정해주세요.")
+        throw IllegalArgumentException("이미 지난 시각입니다. 목표 시각을 다시 설정해주세요.")
     }
 
     ScheduleTarget(
@@ -1437,15 +1234,15 @@ internal fun calculateScheduleTarget(
     if (throwable is IllegalArgumentException) {
         throw throwable
     } else {
-        throw IllegalArgumentException("실행 시각을 확인해주세요.")
+        throw IllegalArgumentException("목표 시각을 확인해주세요.")
     }
 }
 
 private fun parseTimePart(value: String, range: IntRange): Int {
     val parsed = value.toIntOrNull()
-        ?: throw IllegalArgumentException("실행 시각을 확인해주세요.")
+        ?: throw IllegalArgumentException("목표 시각을 확인해주세요.")
     if (parsed !in range) {
-        throw IllegalArgumentException("실행 시각을 확인해주세요.")
+        throw IllegalArgumentException("목표 시각을 확인해주세요.")
     }
     return parsed
 }

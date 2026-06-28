@@ -1,6 +1,4 @@
 <resources>
     <string name="app_name">CLYM</string>
     <string name="main_title">CLYM</string>
-    <string name="accessibility_service_label">CLYM Floating Clock</string>
-    <string name="accessibility_service_description">화면 위에 작은 밀리초 시계를 표시합니다.</string>
 </resources>
