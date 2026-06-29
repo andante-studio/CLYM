@@ -12,7 +12,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.starrydream.nanoclick"
+        applicationId = "com.andantestudio.clym"
         minSdk = 26
         targetSdk = 36
         versionCode = 2
@@ -36,6 +36,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

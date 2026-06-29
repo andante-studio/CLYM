@@ -1,33 +1,68 @@
 {
-  "version": 1,
+  "version": 2,
   "presets": [
     {
-      "id": "google_forms",
-      "name": "구글 폼",
-      "syncUrl": "https://docs.google.com/",
+      "id": "naver",
+      "name": "네이버",
+      "syncUrl": "naver.com",
       "enabled": true,
       "sortOrder": 1
     },
     {
-      "id": "naver_form",
-      "name": "네이버 폼",
-      "syncUrl": "https://form.naver.com/",
+      "id": "google_forms",
+      "name": "구글 폼",
+      "syncUrl": "docs.google.com",
       "enabled": true,
       "sortOrder": 2
     },
     {
-      "id": "weverse",
-      "name": "위버스",
-      "syncUrl": "https://weverse.io/",
+      "id": "fans",
+      "name": "FANS",
+      "syncUrl": "www.jypfans.com",
       "enabled": true,
       "sortOrder": 3
     },
     {
-      "id": "jyp_fans",
-      "name": "FANS",
-      "syncUrl": "https://www.jypfans.com/",
+      "id": "weverse",
+      "name": "위버스",
+      "syncUrl": "fanevent.weverse.io",
       "enabled": true,
       "sortOrder": 4
+    },
+    {
+      "id": "melon_ticket",
+      "name": "멜론티켓",
+      "syncUrl": "ticket.melon.com",
+      "enabled": true,
+      "sortOrder": 5
+    },
+    {
+      "id": "ticketlink",
+      "name": "티켓링크",
+      "syncUrl": "www.ticketlink.co.kr",
+      "enabled": true,
+      "sortOrder": 6
+    },
+    {
+      "id": "interpark",
+      "name": "인터파크",
+      "syncUrl": "ticket.interpark.com",
+      "enabled": true,
+      "sortOrder": 7
+    },
+    {
+      "id": "yes24_ticket",
+      "name": "YES24티켓",
+      "syncUrl": "ticket.yes24.com",
+      "enabled": true,
+      "sortOrder": 8
+    },
+    {
+      "id": "naver_booking",
+      "name": "네이버예약",
+      "syncUrl": "booking.naver.com",
+      "enabled": true,
+      "sortOrder": 9
     }
   ]
 }

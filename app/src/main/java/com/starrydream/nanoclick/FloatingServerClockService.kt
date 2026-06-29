@@ -24,6 +24,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
@@ -62,7 +64,9 @@ class FloatingServerClockService : Service() {
 
     private var windowManager: WindowManager? = null
     private var lockView: ImageButton? = null
-    private var timeView: TextView? = null
+    private var timeView: LinearLayout? = null
+    private var timeIconView: ImageView? = null
+    private var timeTextView: TextView? = null
     private var closeView: TextView? = null
     private var lockParams: WindowManager.LayoutParams? = null
     private var timeParams: WindowManager.LayoutParams? = null
@@ -198,18 +202,39 @@ class FloatingServerClockService : Service() {
         updateClockText()
     }
 
-    private fun createTimeView(): TextView =
-        TextView(this).apply {
-            textSize = TIME_TEXT_SIZE_SP
-            typeface = Typeface.MONOSPACE
-            gravity = Gravity.CENTER_VERTICAL or Gravity.START
-            includeFontPadding = false
-            isSingleLine = true
-            maxLines = 1
-            ellipsize = null
+    private fun createTimeView(): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(timeHorizontalPaddingPx, 0, timeHorizontalPaddingPx, 0)
-            setTextColor(Color.WHITE)
             applyClockBackground()
+            timeIconView = ImageView(this@FloatingServerClockService).apply {
+                setColorFilter(Color.WHITE)
+                alpha = 0.82f
+            }
+            addView(
+                timeIconView,
+                LinearLayout.LayoutParams(16.dpToPx(), 16.dpToPx()).apply {
+                    marginEnd = 6.dpToPx()
+                }
+            )
+            timeTextView = TextView(this@FloatingServerClockService).apply {
+                textSize = TIME_TEXT_SIZE_SP
+                typeface = Typeface.MONOSPACE
+                gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                includeFontPadding = false
+                isSingleLine = true
+                maxLines = 1
+                ellipsize = null
+                setTextColor(Color.WHITE)
+            }
+            addView(
+                timeTextView,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
             setOnTouchListener { _, event ->
                 if (!isEditing) return@setOnTouchListener false
                 handleTimeTouch(event)
@@ -303,7 +328,8 @@ class FloatingServerClockService : Service() {
             return
         }
 
-        timeView?.text = "${modeIcon()} 동기화 중..."
+        updateModeIcon()
+        timeTextView?.text = "동기화 중..."
         resyncJob = serviceScope.launch {
             val result = fetchServerTime(url)
             result
@@ -429,8 +455,10 @@ class FloatingServerClockService : Service() {
         timeView?.let { view ->
             view.alpha = 1f
             view.isEnabled = true
-            view.setTextColor(Color.WHITE)
         }
+        timeIconView?.setColorFilter(Color.WHITE)
+        timeIconView?.alpha = 0.82f
+        timeTextView?.setTextColor(Color.WHITE)
         closeView?.let { view ->
             view.alpha = 1f
             view.isEnabled = true
@@ -497,15 +525,19 @@ class FloatingServerClockService : Service() {
             FloatingClockMode.Device -> System.currentTimeMillis()
             FloatingClockMode.Server -> System.currentTimeMillis() + serverOffsetMs
         }
-        timeView?.text = "${modeIcon()} ${timeFormat.format(Date(nowMs))}"
+        updateModeIcon()
+        timeTextView?.text = timeFormat.format(Date(nowMs))
         updateLockIcon()
     }
 
-    private fun modeIcon(): String =
-        when (clockMode) {
-            FloatingClockMode.Device -> "\uD83D\uDCF1"
-            FloatingClockMode.Server -> "\uD83C\uDF10"
-        }
+    private fun updateModeIcon() {
+        timeIconView?.setImageResource(
+            when (clockMode) {
+                FloatingClockMode.Device -> R.drawable.ic_time_source_phone
+                FloatingClockMode.Server -> R.drawable.ic_time_source_cloud
+            }
+        )
+    }
 
     private fun calculateTimeWindowWidth(): Int {
         val paint = TextPaint().apply {
@@ -513,10 +545,16 @@ class FloatingServerClockService : Service() {
             typeface = Typeface.MONOSPACE
         }
         val maxTextWidth = maxOf(
-            paint.measureText("\uD83D\uDCF1 88:88:88.888"),
-            paint.measureText("\uD83C\uDF10 88:88:88.888")
+            paint.measureText("88:88:88.888"),
+            paint.measureText("88:88:88.888")
         )
-        return ceil(maxTextWidth + (timeHorizontalPaddingPx * 2) + timeWidthSafetyPaddingPx).roundToInt()
+        return ceil(
+            maxTextWidth +
+                (timeHorizontalPaddingPx * 2) +
+                16.dpToPx() +
+                6.dpToPx() +
+                timeWidthSafetyPaddingPx
+        ).roundToInt()
     }
 
     private fun movePartsAroundTime() {

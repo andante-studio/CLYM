@@ -88,7 +88,6 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
 
 private val NeutralCardColor = Color(0xFFF6F7F8)
 private val DialogBackgroundColor = Color.White
@@ -98,7 +97,9 @@ private val ClymAccentBlue = Color(0xFF5EA9E6)
 private const val SERVER_PRESET_TAG = "ServerPreset"
 private const val PUBLIC_PREFS_NAME = "public_preferences"
 private const val COUNTDOWN_SOUND_ENABLED = "countdown_sound_enabled"
-private const val COUNTDOWN_SOUND_LEAD_TIME_MS = 11_000L
+private const val CUSTOM_TIME_HOST = "custom_time_host"
+// Developer tuning value. Example: use 10_700L to start the countdown sound 0.3s later.
+private const val COUNTDOWN_SOUND_LEAD_TIME_MS = 10_400L
 
 private enum class TimeMode {
     Device,
@@ -128,7 +129,10 @@ fun NanoClickScreen() {
     var selectedPresetId by remember { mutableStateOf<String?>(null) }
     var selectedPresetName by remember { mutableStateOf<String?>(null) }
     var syncSourceUrl by remember { mutableStateOf("") }
-    var directSyncUrlDraft by remember { mutableStateOf("") }
+    var customHost by remember {
+        mutableStateOf(publicPrefs.getString(CUSTOM_TIME_HOST, "").orEmpty())
+    }
+    var directSyncUrlDraft by remember { mutableStateOf(customHost) }
     var lastSyncTimeMs by remember { mutableStateOf<Long?>(null) }
     var presets by remember { mutableStateOf<List<ServerTimePreset>>(emptyList()) }
     var isLoadingPresets by remember { mutableStateOf(false) }
@@ -294,7 +298,7 @@ fun NanoClickScreen() {
                 "compose state assigned count=${presets.size}, fallback=${result.fromFallback}, ids=${presets.joinToString { "${it.id}/${it.name}" }}"
             )
             if (result.presets.isEmpty()) {
-                errorMessage = "사용 가능한 프리셋이 없습니다. 직접 설정을 사용해주세요."
+                errorMessage = "사용 가능한 프리셋이 없습니다. 직접 입력을 사용해주세요."
             }
             isLoadingPresets = false
         }
@@ -384,7 +388,7 @@ fun NanoClickScreen() {
             serverOffsetMs = scheduleOffset,
             elapsedNowMs = SystemClock.elapsedRealtime()
         ).getOrElse { throwable ->
-            countdownMessage = throwable.message ?: "목표 시각을 확인해주세요."
+            countdownMessage = throwable.message ?: "알람 시각을 확인해주세요."
             return
         }
 
@@ -455,14 +459,7 @@ fun NanoClickScreen() {
     val serverTimeMs = serverTimeOffsetMs?.let { currentDeviceTimeMs + it }
     val serverTimeText = serverTimeMs?.let { formatTime(it) } ?: "연결 전"
     val deviceTimeText = formatTime(currentDeviceTimeMs)
-    val timeDiffText = serverTimeOffsetMs?.let { formatTimeDifference(it) } ?: "-"
     val communicationTimeText = if (roundTripTimeMs > 0L) "$roundTripTimeMs ms" else "-"
-    val remainingTimeText = formatCountdown(
-        countdownTargetElapsedMs
-            ?.minus(currentElapsedMs)
-            ?.coerceAtLeast(0L)
-            ?: 0L
-    )
 
     if (showPresetDialog) {
         AlertDialog(
@@ -501,10 +498,10 @@ fun NanoClickScreen() {
                             .background(Color(0xFFDDE2E6))
                     )
                     DialogMenuButton(
-                        text = "직접 설정",
+                        text = "직접 입력",
                         onClick = {
                             showPresetDialog = false
-                            directSyncUrlDraft = syncSourceUrl
+                            directSyncUrlDraft = customHost
                             showDirectSyncDialog = true
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -523,40 +520,39 @@ fun NanoClickScreen() {
             onDismissRequest = { showDirectSyncDialog = false },
             title = { Text("서버 주소 직접 설정") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         value = directSyncUrlDraft,
                         onValueChange = { directSyncUrlDraft = it },
                         label = { Text("서버 시간 동기화 주소") },
                         placeholder = { Text("https://...") },
-                        singleLine = true
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
                     DialogMenuButton(
                         text = "붙여넣기",
-                        onClick = { pasteDirectSyncUrl() }
+                        onClick = { pasteDirectSyncUrl() },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    DialogPrimaryButton(
+                        text = "확인",
+                        onClick = {
+                            val trimmed = directSyncUrlDraft.trim()
+                            if (trimmed.isNotEmpty()) {
+                                customHost = trimmed
+                                directSyncUrlDraft = trimmed
+                                publicPrefs.edit()
+                                    .putString(CUSTOM_TIME_HOST, trimmed)
+                                    .apply()
+                                syncServerTime("직접 입력", "custom", trimmed)
+                            }
+                            showDirectSyncDialog = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             },
-            confirmButton = {
-                DialogPrimaryButton(
-                    text = "동기화",
-                    onClick = {
-                        val trimmed = directSyncUrlDraft.trim()
-                        if (trimmed.isEmpty()) {
-                            errorMessage = "주소를 입력해주세요."
-                        } else {
-                            showDirectSyncDialog = false
-                            syncServerTime("직접 설정", "custom", trimmed)
-                        }
-                    }
-                )
-            },
-            dismissButton = {
-                DialogMenuButton(
-                    text = "취소",
-                    onClick = { showDirectSyncDialog = false }
-                )
-            },
+            confirmButton = {},
             containerColor = DialogBackgroundColor
         )
     }
@@ -569,133 +565,300 @@ fun NanoClickScreen() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp)
+                .padding(horizontal = 20.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = 20.dp)
             ) {
+                MainContent(
+                    timeMode = timeMode,
+                    serverTimeMs = serverTimeMs,
+                    selectedPresetName = selectedPresetName,
+                    openPresetDialog = { openPresetDialog() },
+                    isLoadingServerTime = isLoadingServerTime,
+                    syncSourceUrl = syncSourceUrl,
+                    selectedPresetId = selectedPresetId,
+                    syncServerTime = { name, id, url -> syncServerTime(name, id, url) },
+                    serverTimeText = serverTimeText,
+                    deviceTimeText = deviceTimeText,
+                    serverTimeOffsetMs = serverTimeOffsetMs,
+                    communicationTimeText = communicationTimeText,
+                    lastSyncTimeMs = lastSyncTimeMs,
+                    errorMessage = errorMessage,
+                    floatingClockState = floatingClockState,
+                    resetFloatingClock = { resetFloatingClock() },
+                    requestFloatingClockStart = { requestFloatingClockStart() },
+                    hour = hour,
+                    onHourChange = {
+                        hour = it
+                        countdownMessage = null
+                    },
+                    minute = minute,
+                    onMinuteChange = {
+                        minute = it
+                        countdownMessage = null
+                    },
+                    second = second,
+                    onSecondChange = {
+                        second = it
+                        countdownMessage = null
+                    },
+                    millisecond = millisecond,
+                    onMillisecondChange = {
+                        millisecond = it
+                        countdownMessage = null
+                    },
+                    isCountdownRunning = isCountdownRunning,
+                    countdownMessage = countdownMessage,
+                    toggleCountdown = { toggleCountdown() },
+                    isCountdownSoundEnabled = isCountdownSoundEnabled,
+                    onCountdownSoundEnabledChange = { enabled ->
+                        isCountdownSoundEnabled = enabled
+                        if (!enabled) {
+                            countdownTargetElapsedMs = null
+                            countdownMessage = null
+                            clearCountdownSound()
+                        } else {
+                            val remainingMs = countdownTargetElapsedMs
+                                ?.minus(SystemClock.elapsedRealtime())
+                            if (
+                                remainingMs != null &&
+                                remainingMs >= COUNTDOWN_SOUND_LEAD_TIME_MS &&
+                                !hasPlayedCountdownSound
+                            ) {
+                                isCountdownSoundScheduled = true
+                            }
+                        }
+                        publicPrefs.edit()
+                            .putBoolean(COUNTDOWN_SOUND_ENABLED, enabled)
+                            .apply()
+                    },
+                    hasOverlayPermission = hasOverlayPermission,
+                    openOverlaySettings = { openOverlaySettings() }
+                )
+            }
+
+            FooterInfo(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp, bottom = 14.dp),
+                versionName = BuildConfig.VERSION_NAME
+            )
+        }
+    }
+}
+
+@Composable
+private fun MainContent(
+    timeMode: TimeMode,
+    serverTimeMs: Long?,
+    selectedPresetName: String?,
+    openPresetDialog: () -> Unit,
+    isLoadingServerTime: Boolean,
+    syncSourceUrl: String,
+    selectedPresetId: String?,
+    syncServerTime: (String, String?, String) -> Unit,
+    serverTimeText: String,
+    deviceTimeText: String,
+    serverTimeOffsetMs: Long?,
+    communicationTimeText: String,
+    lastSyncTimeMs: Long?,
+    errorMessage: String?,
+    floatingClockState: FloatingClockUiState,
+    resetFloatingClock: () -> Unit,
+    requestFloatingClockStart: () -> Unit,
+    hour: String,
+    onHourChange: (String) -> Unit,
+    minute: String,
+    onMinuteChange: (String) -> Unit,
+    second: String,
+    onSecondChange: (String) -> Unit,
+    millisecond: String,
+    onMillisecondChange: (String) -> Unit,
+    isCountdownRunning: Boolean,
+    countdownMessage: String?,
+    toggleCountdown: () -> Unit,
+    isCountdownSoundEnabled: Boolean,
+    onCountdownSoundEnabledChange: (Boolean) -> Unit,
+    hasOverlayPermission: Boolean,
+    openOverlaySettings: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.main_title),
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = "Mobile Millisecond Clock",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp)
+            ) {
+                if (timeMode == TimeMode.Server && serverTimeMs != null) {
+                    TimeCardHeader(
+                        title = "현재 시간",
+                        chipText = "${selectedPresetName ?: "서버"} ▼",
+                        onChipClick = openPresetDialog,
+                        action = {
+                            IconButton(
+                                onClick = {
+                                    val name = selectedPresetName ?: "직접 입력"
+                                    syncServerTime(name, selectedPresetId, syncSourceUrl)
+                                },
+                                enabled = !isLoadingServerTime && syncSourceUrl.isNotBlank(),
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                Icon(
+                                    painter = painterResource(R.drawable.ic_refresh_24),
+                                    contentDescription = "서버 시간 다시 동기화",
+                                    tint = ClymNavy,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = serverTimeText,
+                        modifier = Modifier.fillMaxWidth(),
+                        fontSize = 38.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Text(
+                        text = "기기 $deviceTimeText · 서버 ${formatSignedOffset(serverTimeOffsetMs ?: 0L)}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+
+                    Text(
+                        text = "통신 $communicationTimeText · 마지막 ${lastSyncTimeMs?.let { formatTime(it) } ?: "-"}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else {
+                    TimeCardHeader(
+                        title = "현재 시간",
+                        chipText = "기기 시간 ▼",
+                        onChipClick = openPresetDialog,
+                        action = {
+                            Box(modifier = Modifier.size(44.dp))
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = deviceTimeText,
+                        modifier = Modifier.fillMaxWidth(),
+                        fontSize = 38.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                errorMessage?.let { message ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
                 Text(
-                    text = stringResource(R.string.main_title),
-                    fontSize = 30.sp,
+                    text = "플로팅 시계",
+                    color = ClymNavy,
                     fontWeight = FontWeight.Bold
                 )
 
-                Text(
-                    text = "Mobile Millisecond Clock",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+                Spacer(modifier = Modifier.height(6.dp))
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp)
+                Button(
+                    onClick = {
+                        if (floatingClockState.isRunning) {
+                            resetFloatingClock()
+                        } else {
+                            requestFloatingClockStart()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    if (timeMode == TimeMode.Server && serverTimeMs != null) {
-                        TimeCardHeader(
-                            title = "서버 시간",
-                            chipText = "${selectedPresetName ?: "서버"} ▼",
-                            onChipClick = { openPresetDialog() },
-                            action = {
-                                IconButton(
-                                    onClick = {
-                                        val name = selectedPresetName ?: "직접 설정"
-                                        syncServerTime(name, selectedPresetId, syncSourceUrl)
-                                    },
-                                    enabled = !isLoadingServerTime && syncSourceUrl.isNotBlank(),
-                                    modifier = Modifier.size(44.dp)
-                                ) {
-                                    Icon(
-                                        painter = painterResource(R.drawable.ic_refresh_24),
-                                        contentDescription = "서버 시간 다시 동기화",
-                                        tint = ClymNavy,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                            }
-                        )
+                    Text(if (floatingClockState.isRunning) "플로팅 시계 초기화" else "플로팅 시계 켜기")
+                }
+            }
+        }
 
-                        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = serverTimeText,
-                            fontSize = 28.sp,
+                            text = "카운트다운 사운드",
                             fontWeight = FontWeight.Bold
                         )
-
                         Text(
-                            text = "기기 $deviceTimeText · 서버 ${formatSignedOffset(serverTimeOffsetMs ?: 0L)}",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-
-                        Text(
-                            text = "통신 $communicationTimeText · 마지막 ${lastSyncTimeMs?.let { formatTime(it) } ?: "-"}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    } else {
-                        TimeCardHeader(
-                            title = "현재 시간",
-                            chipText = "기기 시간 ▼",
-                            onChipClick = { openPresetDialog() },
-                            action = {
-                                Box(modifier = Modifier.size(44.dp))
-                            }
-                        )
-
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        Text(
-                            text = deviceTimeText,
-                            fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    errorMessage?.let { message ->
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = message,
-                            color = MaterialTheme.colorScheme.error,
+                            text = "알람 시각 전에 카운트다운 사운드를 재생합니다.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
+                    Switch(
+                        checked = isCountdownSoundEnabled,
+                        onCheckedChange = onCountdownSoundEnabledChange
+                    )
+                }
+
+                if (isCountdownSoundEnabled) {
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(Color(0xFFDDE2E6))
+                    )
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Button(
-                        onClick = {
-                            if (floatingClockState.isRunning) {
-                                resetFloatingClock()
-                            } else {
-                                requestFloatingClockStart()
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(if (floatingClockState.isRunning) "플로팅 시계 초기화" else "플로팅 시계 켜기")
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp)
-                ) {
                     Text(
-                        text = "목표 시각",
+                        text = "알람 시각",
                         fontWeight = FontWeight.Bold
                     )
 
@@ -708,85 +871,50 @@ fun NanoClickScreen() {
                     ) {
                         TimeInput(
                             value = hour,
-                            onValueChange = {
-                                hour = it
-                                countdownMessage = null
-                            },
+                            onValueChange = onHourChange,
                             label = "",
                             maxLength = 2,
                             enabled = !isCountdownRunning,
                             modifier = Modifier.width(58.dp)
-                                               .height(48.dp)
+                                .height(48.dp)
                         )
                         TimeSeparator(":")
                         TimeInput(
                             value = minute,
-                            onValueChange = {
-                                minute = it
-                                countdownMessage = null
-                            },
+                            onValueChange = onMinuteChange,
                             label = "",
                             maxLength = 2,
                             enabled = !isCountdownRunning,
                             modifier = Modifier.width(58.dp)
-                                               .height(48.dp)
+                                .height(48.dp)
                         )
                         TimeSeparator(":")
                         TimeInput(
                             value = second,
-                            onValueChange = {
-                                second = it
-                                countdownMessage = null
-                            },
+                            onValueChange = onSecondChange,
                             label = "",
                             maxLength = 2,
                             enabled = !isCountdownRunning,
                             modifier = Modifier.width(58.dp)
-                                               .height(48.dp)
+                                .height(48.dp)
                         )
                         TimeSeparator(".")
                         TimeInput(
                             value = millisecond,
-                            onValueChange = {
-                                millisecond = it
-                                countdownMessage = null
-                            },
+                            onValueChange = onMillisecondChange,
                             label = "",
                             maxLength = 3,
                             enabled = !isCountdownRunning,
                             modifier = Modifier.width(78.dp)
-                                               .height(48.dp)
+                                .height(48.dp)
                         )
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
-                        text = "목표 시각: $hour:$minute:$second.$millisecond",
+                        text = "알람 시각: $hour:$minute:$second.$millisecond",
                         style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp)
-                ) {
-                    Text(
-                        text = "카운트다운",
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = remainingTimeText,
-                        fontSize = 28.sp,
-                        fontWeight = FontWeight.Bold
                     )
 
                     countdownMessage?.let { message ->
@@ -797,98 +925,62 @@ fun NanoClickScreen() {
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedButton(
+                        onClick = toggleCountdown,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, ClymAccentBlue),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color.White,
+                            contentColor = ClymNavy
+                        )
+                    ) {
+                        Text(if (isCountdownRunning) "카운트다운 취소" else "카운트다운 시작")
+                    }
+                } else {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "카운트다운 사운드를 켜면 알람 시각을 설정할 수 있습니다.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
+        }
 
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Button(
-                onClick = { toggleCountdown() },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(54.dp)
-            ) {
-                Text(if (isCountdownRunning) "카운트다운 취소" else "카운트다운 시작")
-            }
-
+        if (!hasOverlayPermission) {
             Spacer(modifier = Modifier.height(14.dp))
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "카운트다운 사운드",
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "목표 시각 전에 카운트다운 사운드를 재생합니다.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    Switch(
-                        checked = isCountdownSoundEnabled,
-                        onCheckedChange = { enabled ->
-                            isCountdownSoundEnabled = enabled
-                            if (!enabled) {
-                                clearCountdownSound()
-                            } else {
-                                val remainingMs = countdownTargetElapsedMs
-                                    ?.minus(SystemClock.elapsedRealtime())
-                                if (
-                                    remainingMs != null &&
-                                    remainingMs >= COUNTDOWN_SOUND_LEAD_TIME_MS &&
-                                    !hasPlayedCountdownSound
-                                ) {
-                                    isCountdownSoundScheduled = true
-                                }
-                            }
-                            publicPrefs.edit()
-                                .putBoolean(COUNTDOWN_SOUND_ENABLED, enabled)
-                                .apply()
-                        }
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = "플로팅 권한이 필요합니다",
+                        fontWeight = FontWeight.Bold
                     )
-                }
-            }
-
-            if (!hasOverlayPermission) {
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = NeutralCardColor)
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text(
-                            text = "플로팅 권한이 필요합니다",
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "플로팅 시계를 화면 위에 표시하려면 권한을 허용해주세요.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Button(
-                            onClick = { openOverlaySettings() },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("플로팅 권한 열기")
-                        }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "플로팅 시계를 화면 위에 표시하려면 권한을 허용해주세요.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = openOverlaySettings,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("플로팅 권한 열기")
                     }
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(14.dp))
     }
 }
 
@@ -995,7 +1087,7 @@ private fun TimeSourceChip(
         onClick = onClick,
         modifier = Modifier
             .height(34.dp)
-            .widthIn(max = 136.dp)
+            .widthIn(max = 190.dp)
             .semantics { contentDescription = "서버 선택" },
         shape = RoundedCornerShape(18.dp),
         border = BorderStroke(1.dp, ClymAccentBlue),
@@ -1011,6 +1103,33 @@ private fun TimeSourceChip(
             overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+private fun FooterInfo(
+    modifier: Modifier = Modifier,
+    versionName: String
+) {
+    Column(
+        modifier = modifier.padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "© Andante Studio",
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            style = MaterialTheme.typography.bodySmall
+        )
+        Text(
+            text = "Version $versionName",
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+            style = MaterialTheme.typography.bodySmall
+        )
+        Text(
+            text = "andante.studio.lab@gmail.com",
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+            style = MaterialTheme.typography.bodySmall
         )
     }
 }
@@ -1124,44 +1243,6 @@ private fun formatTime(timeMs: Long): String =
 private fun formatSignedOffset(offsetMs: Long): String =
     if (offsetMs >= 0L) "+${offsetMs}ms" else "${offsetMs}ms"
 
-private fun formatTimeDifference(offsetMs: Long): String {
-    if (offsetMs == 0L) {
-        return "서버와 기기 시간이 같습니다"
-    }
-
-    val readableDuration = formatReadableDuration(abs(offsetMs))
-    return if (offsetMs > 0L) {
-        "서버가 기기보다 $readableDuration 빠름"
-    } else {
-        "기기가 서버보다 $readableDuration 빠름"
-    }
-}
-
-private fun formatReadableDuration(durationMs: Long): String =
-    when {
-        durationMs >= 60_000L -> {
-            val minutes = durationMs / 60_000L
-            val seconds = (durationMs % 60_000L) / 1_000L
-            "${minutes}분 ${seconds}초"
-        }
-        durationMs >= 1_000L -> "${durationMs / 1_000L}초"
-        else -> "$durationMs ms"
-    }
-
-private fun formatCountdown(durationMs: Long): String {
-    val hours = durationMs / 3_600_000L
-    val minutes = (durationMs % 3_600_000L) / 60_000L
-    val seconds = (durationMs % 60_000L) / 1_000L
-    val milliseconds = durationMs % 1_000L
-    return "%02d:%02d:%02d.%03d".format(
-        Locale.US,
-        hours,
-        minutes,
-        seconds,
-        milliseconds
-    )
-}
-
 internal data class ExecutionTimeParts(
     val hour: String,
     val minute: String,
@@ -1222,7 +1303,7 @@ internal fun calculateScheduleTarget(
     val delayMs = targetServerTimeMs - serverNowMs
 
     if (delayMs <= 0L) {
-        throw IllegalArgumentException("이미 지난 시각입니다. 목표 시각을 다시 설정해주세요.")
+        throw IllegalArgumentException("이미 지난 시각입니다. 알람 시각을 다시 설정해주세요.")
     }
 
     ScheduleTarget(
@@ -1234,15 +1315,15 @@ internal fun calculateScheduleTarget(
     if (throwable is IllegalArgumentException) {
         throw throwable
     } else {
-        throw IllegalArgumentException("목표 시각을 확인해주세요.")
+        throw IllegalArgumentException("알람 시각을 확인해주세요.")
     }
 }
 
 private fun parseTimePart(value: String, range: IntRange): Int {
     val parsed = value.toIntOrNull()
-        ?: throw IllegalArgumentException("목표 시각을 확인해주세요.")
+        ?: throw IllegalArgumentException("알람 시각을 확인해주세요.")
     if (parsed !in range) {
-        throw IllegalArgumentException("목표 시각을 확인해주세요.")
+        throw IllegalArgumentException("알람 시각을 확인해주세요.")
     }
     return parsed
 }
