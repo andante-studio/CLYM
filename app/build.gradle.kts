@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.starrydream.nanoclick"
+    namespace = "com.andantestudio.clym"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
